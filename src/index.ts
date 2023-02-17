@@ -1,4 +1,4 @@
-import axios, { AxiosResponse, Method as AxiosMethod } from "axios";
+import axios, { AxiosResponse, Method as AxiosMethod } from 'axios';
 
 type ServerConfig = {
   /** e.g. https://dummy.restapiexample.com/api/v1 */
@@ -10,82 +10,112 @@ type ServiceConfigWithoutDev = { readonly prod: ServerConfig };
 type ServiceConfigWithDev = ServiceConfigWithoutDev & {
   readonly dev: ServerConfig;
 };
+
+type Endpoint = {
+  method: AxiosMethod;
+  path: string;
+  params?: Record<string, string | string[]>;
+};
+
 type ServiceConfig = ServiceConfigWithDev | ServiceConfigWithoutDev;
+type HasDev<T> = T extends ServiceConfigWithDev ? true : false;
+const hasDev = (config: ServiceConfig): config is ServiceConfigWithDev => 'dev' in config;
 
-type Service<HAS_DEV extends boolean> =
+type EnvWithoutDev<ENDPOINT extends string> = {
+  prod: Record<ENDPOINT, CallFn>;
+};
+type EnvWithDev<ENDPOINT extends string> = {
+  prod: Record<ENDPOINT, CallFn>;
+  dev: Record<ENDPOINT, CallFn>;
+};
+
+type EndpointWithoutDev<ENDPOINT extends string> = Record<ENDPOINT, { prod: CallFn }>;
+type EndpointWithDev<ENDPOINT extends string> = Record<ENDPOINT, { prod: CallFn; dev: CallFn }>;
+type Service<HAS_DEV extends boolean, ENDPOINT extends string> = (
   | {
-      hasDev: false;
-      config: ServiceConfigWithoutDev;
+      readonly hasDev: false;
+      env: EnvWithoutDev<ENDPOINT>;
+      endpoint: EndpointWithoutDev<ENDPOINT>;
     }
-  | ({
-      hasDev: true;
-      config: ServiceConfigWithDev;
-    } & { hasDev: HAS_DEV });
-
-type CallFn = () => Promise<AxiosResponse<unknown, unknown>>;
-
-type Endpoint<NAME extends string, HAS_DEV extends boolean> = {
-  readonly name: NAME;
-  callProd: CallFn;
-} & (
-  | { readonly hasDev: false }
-  | { readonly hasDev: true; callDev: CallFn }
+  | {
+      readonly hasDev: true;
+      env: EnvWithDev<ENDPOINT>;
+      endpoint: EndpointWithDev<ENDPOINT>;
+    }
 ) & { readonly hasDev: HAS_DEV };
 
-type HasDev<T> = T extends { dev: ServerConfig } ? true : false;
+type CallFn = () => Promise<AxiosResponse<unknown, unknown>>;
+type Keyof<T> = T extends Record<infer K, any> ? K : never;
 
-const createService = <T extends ServiceConfig>(
-  serviceConfig: T
-): Service<HasDev<T>> => {
-  return {
-    hasDev: ("dev" in serviceConfig) as any,
-    config: serviceConfig,
-  };
+const mapValues = <T extends Record<any, any>, K>(
+  o: T,
+  mapper: (value: T[keyof T]) => K
+): Record<Keyof<T>, K> =>
+  Object.fromEntries(Object.entries(o).map((entry) => [entry[0], mapper(entry[1])])) as any;
+
+const createService = <CONFIG extends ServiceConfig, ENDPOINTS extends Record<string, Endpoint>>(
+  serviceConfig: CONFIG,
+  endpoints: ENDPOINTS
+): Service<HasDev<CONFIG>, Keyof<ENDPOINTS>> => {
+  const createCallFn =
+    ({ baseUrl }: ServerConfig) =>
+    ({ path, method }: Endpoint) =>
+    () =>
+      axios.request({
+        method,
+        url: `${baseUrl}/${path}`,
+      });
+
+  const prodCallFn = createCallFn(serviceConfig.prod);
+
+  if (hasDev(serviceConfig)) {
+    const devCallFn = createCallFn(serviceConfig.dev);
+    const env = {
+      prod: mapValues(endpoints, (endpoint) => prodCallFn(endpoint)),
+      dev: mapValues(endpoints, (endpoint) => devCallFn(endpoint)),
+    } satisfies EnvWithDev<Keyof<ENDPOINTS>>;
+
+    const endpoint = mapValues(endpoints, (endpoint) => ({
+      prod: prodCallFn(endpoint),
+      dev: devCallFn(endpoint),
+    }));
+
+    const serviceWithDev = {
+      hasDev: true,
+      env,
+      endpoint,
+    } satisfies Service<true, Keyof<ENDPOINTS>>;
+
+    return serviceWithDev as any;
+  } else {
+    const env = {
+      prod: mapValues(endpoints, (endpoint) => prodCallFn(endpoint)),
+    } satisfies EnvWithoutDev<Keyof<ENDPOINTS>>;
+
+    const endpoint = mapValues(endpoints, (endpoint) => ({
+      prod: prodCallFn(endpoint),
+    }));
+
+    const serviceWithoutDev = {
+      hasDev: false,
+      env,
+      endpoint,
+    } satisfies Service<false, Keyof<ENDPOINTS>>;
+
+    return serviceWithoutDev as any;
+  }
 };
 
-const createCall =
-  (method: AxiosMethod, path: string, config: ServerConfig) => () =>
-    axios.request({
-      method,
-      url: `${config.baseUrl}/${path}`,
-      headers: config.headers,
-    });
+const service = createService(
+  {
+    prod: { baseUrl: 'https://dummy.restapiexample.com/api/v1' },
+    // dev: { baseUrl: 'https://dummy.restapiexample.com/api/v1' },
+  },
+  {
+    employees: { method: 'GET', path: '/employees' },
+    employee: { method: 'GET', path: '/employee/1' },
+  }
+);
 
-const serviceHasDev = <SERVICE extends Service<any>>(
-  service: SERVICE
-): service is SERVICE & { hasDev: true } => service.hasDev;
-
-const createEndpoint = <NAME extends string, HAS_DEV extends boolean>(
-  service: Service<HAS_DEV>,
-  name: NAME,
-  method: AxiosMethod,
-  path: string
-): Endpoint<NAME, HAS_DEV> => {
-  const base = {
-    name,
-    callProd: createCall(method, path, service.config.prod),
-  } satisfies Pick<Endpoint<NAME, any>, "name" | "callProd">;
-
-  return (
-    serviceHasDev(service)
-      ? ({
-          ...base,
-          hasDev: service.hasDev,
-          callDev: createCall(method, path, service.config.dev),
-        } satisfies Endpoint<NAME, true>)
-      : ({
-          ...base,
-          hasDev: service.hasDev,
-        } satisfies Endpoint<NAME, false>)
-  ) as any;
-};
-
-const service = createService({
-  prod: { baseUrl: "https://dummy.restapiexample.com/api/v1" },
-  dev: { baseUrl: "https://dummy.restapiexample.com/api/v1" },
-});
-
-const endpoint = createEndpoint(service, "employees", "GET", "/employees");
-
-endpoint.callProd().then((response) => console.log(response.data));
-endpoint.callDev().then((response) => console.log(response.data));
+service.env.prod.employees().then((response) => console.log(response.data));
+service.endpoint.employees.prod().then((response) => console.log(response.data));
