@@ -22,15 +22,14 @@ type Service<HAS_DEV extends boolean> =
       config: ServiceConfigWithDev;
     } & { hasDev: HAS_DEV });
 
+type CallFn = () => Promise<AxiosResponse<unknown, unknown>>;
+
 type Endpoint<NAME extends string, HAS_DEV extends boolean> = {
   readonly name: NAME;
-  callProd: () => Promise<AxiosResponse<unknown, unknown>>;
+  callProd: CallFn;
 } & (
   | { readonly hasDev: false }
-  | {
-      readonly hasDev: true;
-      callDev: () => Promise<AxiosResponse<unknown, unknown> | undefined>;
-    }
+  | { readonly hasDev: true; callDev: CallFn }
 ) & { readonly hasDev: HAS_DEV };
 
 type HasDev<T> = T extends { dev: ServerConfig } ? true : false;
@@ -62,24 +61,26 @@ const createEndpoint = <NAME extends string, HAS_DEV extends boolean>(
   method: AxiosMethod,
   path: string
 ): Endpoint<NAME, HAS_DEV> => {
-  if (serviceHasDev(service)) {
-    return {
-      name,
-      hasDev: service.hasDev,
-      callProd: createCall(method, path, service.config.prod),
-      callDev: createCall(method, path, service.config.dev),
-    };
-  } else {
-    return {
-      name,
-      hasDev: service.hasDev as false & HAS_DEV,
-      callProd: createCall(method, path, service.config.prod),
-    };
-  }
+  const base = {
+    name,
+    callProd: createCall(method, path, service.config.prod),
+  } satisfies Pick<Endpoint<NAME, any>, "name" | "callProd">;
+
+  return (
+    serviceHasDev(service)
+      ? ({
+          ...base,
+          hasDev: service.hasDev,
+          callDev: createCall(method, path, service.config.dev),
+        } satisfies Endpoint<NAME, true>)
+      : ({
+          ...base,
+          hasDev: service.hasDev,
+        } satisfies Endpoint<NAME, false>)
+  ) as any;
 };
 
 const service = createService({
-  hasDev: false,
   prod: { baseUrl: "https://dummy.restapiexample.com/api/v1" },
   dev: { baseUrl: "https://dummy.restapiexample.com/api/v1" },
 });
@@ -87,3 +88,4 @@ const service = createService({
 const endpoint = createEndpoint(service, "employees", "GET", "/employees");
 
 endpoint.callProd().then((response) => console.log(response.data));
+endpoint.callDev().then((response) => console.log(response.data));
