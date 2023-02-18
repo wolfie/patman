@@ -44,9 +44,11 @@ type Endpoint<ARGS extends t.Any, BODY extends t.Any> = {
     }
   | {
       args: ARGS;
-      path: (args: t.TypeOf<ARGS>) => string;
-      headers?: (args: t.TypeOf<ARGS>) => Record<string, string>;
-      params?: (args: t.TypeOf<ARGS>) => Record<string, ParamValues | ParamValues[]>;
+      path: string | ((args: t.TypeOf<ARGS>) => string);
+      headers?: Record<string, string> | ((args: t.TypeOf<ARGS>) => Record<string, string>);
+      params?:
+        | Record<string, ParamValues | ParamValues[]>
+        | ((args: t.TypeOf<ARGS>) => Record<string, ParamValues | ParamValues[]>);
     }
 );
 
@@ -111,6 +113,12 @@ const patman = new Patman(
     } satisfies ServiceEnv,
   },
   {
+    static: {
+      method: 'GET',
+      path: '/',
+      params: { type: 'meat-and-filler' },
+      body: t.array(t.string),
+    },
     meatAndFiller: {
       method: 'GET',
       args: MeatAndFillerArgs,
@@ -123,5 +131,10 @@ const patman = new Patman(
 
 patman
   .$({ prod: 'meatAndFiller' })({ type: 'all-meat', paras: 1 })
+  .then((response) => response.data)
+  .then(console.log);
+
+patman
+  .$({ prod: 'static' })()
   .then((response) => response.data)
   .then(console.log);
