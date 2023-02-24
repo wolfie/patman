@@ -2,7 +2,11 @@
   "name": "patman",
   "license": "MIT",
   "displayName": "PatMan",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "sideEffects": false,
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && cp package.json dist",
     "dev": "cross-env DEBUG=patman* ts-node example"
   },
   "peerDependencies": {
