@@ -1,6 +1,7 @@
-import Patman, { Endpoint, IotsParseError, ServiceEnv } from '../src';
+import Patman, { Endpoint } from '../src';
 import * as t from 'io-ts';
 import { isAxiosError } from 'axios';
+import { IotsParseError } from '../src/iots-utils';
 
 const MeatAndFillerArgs = t.intersection([
   t.type({

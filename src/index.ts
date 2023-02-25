@@ -4,18 +4,25 @@ import axios, {
   type AxiosRequestConfig,
   AxiosError,
 } from 'axios';
+import debug from './debug';
 import * as t from 'io-ts';
 import { stringify } from 'qs';
-import debug from 'debug';
+import { decode, IotsParseError } from './iots-utils';
+
+const CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const getRandomChars = () =>
+  Array(8)
+    .fill(undefined)
+    .map(() => CHARS[Math.floor(Math.random() * CHARS.length)])
+    .join('');
 
 let reqId = 0;
-type AxiosRequestConfigWithCorrelationId = AxiosRequestConfig & { reqId: number };
-const hasReqId = <T>(config: T): config is T & { reqId: number } =>
+type Enhancement = { reqId: number; logger: debug.Debugger };
+type AxiosRequestEnhanced = AxiosRequestConfig & Enhancement;
+const isEnhanced = <T>(config: T): config is T & Enhancement =>
   typeof (config as any)['reqId'] === 'number';
 
 const logger = debug('patman');
-const requestLogger = logger.extend('request');
-const responseLogger = logger.extend('response');
 
 const removeUndefinedProps = <T>(t: Record<string, T | undefined>): Record<string, T> =>
   Object.fromEntries(Object.entries(t).filter(([_, value]) => typeof value !== 'undefined')) as any;
@@ -27,58 +34,11 @@ const tap =
     return t;
   };
 
-if (requestLogger.enabled)
+if (logger.enabled) {
   axios.interceptors.request.use(
-    tap((request) =>
-      requestLogger(hasReqId(request) ? request.reqId : '###', '[headers]:', request.headers)
-    )
+    tap((request) => isEnhanced(request) && request.logger('[req] [headers]:', request.headers))
   );
-
-const cropStringEnd = (maxLength: number) => (string: string) =>
-  string.length > maxLength ? string.substring(0, maxLength) + '…' : string;
-const cropStringStart = (maxLength: number) => (string: string) =>
-  string.length > maxLength ? '…' + string.substring(maxLength) : string;
-export class IotsParseError extends Error {
-  public formattedErrors;
-  constructor(public originalErrors: t.Errors) {
-    const formattedErrors = formatIotsError(originalErrors);
-    const errorMsg = JSON.stringify(
-      formattedErrors.map(({ expectedType, path, ...error }) => ({
-        ...error,
-        path: cropStringStart(50)(path),
-        expectedType: cropStringEnd(50)(expectedType),
-        originalValue:
-          'originalValue' in error ? cropStringEnd(50)((error as any).originalValue) : undefined,
-      })),
-      null,
-      2
-    );
-    super(errorMsg.length > 200 ? errorMsg.substring(0, 200) + '…' : errorMsg);
-    this.formattedErrors = formattedErrors;
-  }
 }
-
-const formatIotsError = (errors: t.Errors) =>
-  errors.map((error) => {
-    const base = {
-      path: error.context.map((c) => c.key || '#root').join('.'),
-      expectedType: error.context[error.context.length - 1].type.name,
-    };
-    const parsedError =
-      typeof error.value === 'undefined'
-        ? { ...base, originalValueIsUndefined: true }
-        : { ...base, originalValue: error.value };
-    return parsedError;
-  });
-
-const decode =
-  <T extends t.Any>(t: T) =>
-  (x: unknown): t.TypeOf<T> => {
-    const result = t.decode(x);
-    if (result._tag === 'Right') return result.right;
-    else throw new IotsParseError(result.left);
-  };
-
 const AxiosResponse = <T extends t.Any>(data: T) =>
   t.type({
     data,
@@ -120,7 +80,7 @@ class Patman<SNAMES extends string, E extends Record<string, Endpoint<any, any>>
   private fnFromServiceandEndpoint =
     <S extends ServiceEnv, E extends Endpoint<any, any>>(s: S, e: E) =>
     (args: t.TypeOf<E['args']>): Promise<AxiosResponse<t.TypeOf<E['body']>>> => {
-      const axiosOptions: AxiosRequestConfigWithCorrelationId = {
+      const axiosOptions: AxiosRequestEnhanced = {
         method: e.method,
         url: `${s.baseUrl}${typeof e.path === 'string' ? e.path : e.path(args)}`,
         headers: { ...s.headers, ...e.headers },
@@ -129,28 +89,28 @@ class Patman<SNAMES extends string, E extends Record<string, Endpoint<any, any>>
           serialize: (params) => stringify(removeUndefinedProps(params), { arrayFormat: 'repeat' }),
         },
         reqId: reqId++,
+        logger: logger.extend(`${reqId}#${getRandomChars()}`),
       };
 
-      requestLogger(axiosOptions.reqId, e.method, axios.getUri(axiosOptions));
+      axiosOptions.logger('[req]', e.method, axios.getUri(axiosOptions));
 
       const promise = axios.request(axiosOptions).then(decode(AxiosResponse(e.body ?? t.unknown)));
-      return responseLogger.enabled
+      return axiosOptions.logger.enabled
         ? (promise
             .then(
               tap((response) => {
-                responseLogger(
-                  axiosOptions.reqId,
+                axiosOptions.logger(
+                  '[res]',
                   '[status]:',
                   `${response.status} ${response.statusText}`
                 );
-                responseLogger(axiosOptions.reqId, '[headers]:', response.headers);
+                axiosOptions.logger('[res]', '[headers]:', response.headers);
               })
             )
             .catch((e) => {
-              if (e instanceof AxiosError)
-                responseLogger(axiosOptions.reqId, 'AxiosError: ' + e.message);
+              if (e instanceof AxiosError) axiosOptions.logger('[res]', 'AxiosError: ' + e.message);
               else if (e instanceof IotsParseError)
-                responseLogger(axiosOptions.reqId, 'IotsParseError: ' + e.message);
+                axiosOptions.logger('[res]', 'IotsParseError: ' + e.message);
               throw e;
             }) as any)
         : promise;
