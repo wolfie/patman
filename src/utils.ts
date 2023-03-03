@@ -1,3 +1,4 @@
+import { isAxiosError } from 'axios';
 import * as t from 'io-ts';
 
 const formatIotsError = (errors: t.Errors) =>
@@ -45,3 +46,18 @@ export class IotsParseError extends Error {
     this.formattedErrors = formattedErrors;
   }
 }
+
+export const handleIotsParseError =
+  <T>(fallbackValue: T) =>
+  (e: unknown): T => {
+    if (e instanceof IotsParseError) return fallbackValue;
+    else throw e;
+  };
+
+export const handleAxios404Response =
+  <T>(fallbackValue: T) =>
+  (e: unknown) => {
+    if (isAxiosError(e) && e.response?.status === 404) {
+      return fallbackValue;
+    } else throw e;
+  };

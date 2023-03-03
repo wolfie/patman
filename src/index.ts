@@ -7,7 +7,7 @@ import axios, {
 import debug from './debug';
 import * as t from 'io-ts';
 import { stringify } from 'qs';
-import { decode, IotsParseError } from './iots-utils';
+import { decode, IotsParseError } from './utils';
 
 const CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const getRandomChars = () =>
@@ -16,8 +16,8 @@ const getRandomChars = () =>
     .map(() => CHARS[Math.floor(Math.random() * CHARS.length)])
     .join('');
 
-let reqId = 0;
-type Enhancement = { reqId: number; logger: debug.Debugger };
+const reqIdRef = { current: 0 };
+type Enhancement = { reqId: number; transactionLogger: debug.Debugger };
 type AxiosRequestEnhanced = AxiosRequestConfig & Enhancement;
 const isEnhanced = <T>(config: T): config is T & Enhancement =>
   typeof (config as any)['reqId'] === 'number';
@@ -36,7 +36,10 @@ const tap =
 
 if (logger.enabled) {
   axios.interceptors.request.use(
-    tap((request) => isEnhanced(request) && request.logger('[req] [headers]:', request.headers))
+    tap(
+      (request) =>
+        isEnhanced(request) && request.transactionLogger('[req] [headers]:', request.headers)
+    )
   );
 }
 const AxiosResponse = <T extends t.Any>(data: T) =>
@@ -48,80 +51,84 @@ const AxiosResponse = <T extends t.Any>(data: T) =>
     config: t.UnknownRecord,
   });
 
-export type ParamValues = string | number | boolean;
-export type Endpoint<ARGS extends t.Any, BODY extends t.Any> = {
-  method: AxiosMethod;
-  body?: BODY;
-} & (
-  | {
-      args?: undefined;
-      path: string;
-      headers?: Record<string, string>;
-      params?: Record<string, ParamValues | ParamValues[]>;
-    }
-  | {
-      args: ARGS;
-      path: string | ((args: t.TypeOf<ARGS>) => string);
-      headers?: Record<string, string> | ((args: t.TypeOf<ARGS>) => Record<string, string>);
-      params?:
-        | Record<string, ParamValues | ParamValues[]>
-        | ((args: t.TypeOf<ARGS>) => Record<string, ParamValues | ParamValues[]>);
-    }
-);
-
-export type ServiceEnv = {
-  baseUrl: `${'http' | 'https'}://${string}`;
+export type Service = {
+  baseUrl: string;
   headers?: Record<string, string>;
 };
 
-class Patman<SNAMES extends string, E extends Record<string, Endpoint<any, any>>> {
-  constructor(private readonly s: Record<SNAMES, ServiceEnv>, private readonly e: E) {}
+type ParamType = string | number | boolean | undefined;
+type Params = Record<string, ParamType | Array<ParamType>>;
+type PromiseMaybe<T> = T | Promise<T>;
 
-  private fnFromServiceandEndpoint =
-    <S extends ServiceEnv, E extends Endpoint<any, any>>(s: S, e: E) =>
-    (args: t.TypeOf<E['args']>): Promise<AxiosResponse<t.TypeOf<E['body']>>> => {
-      const axiosOptions: AxiosRequestEnhanced = {
-        method: e.method,
-        url: `${s.baseUrl}${typeof e.path === 'string' ? e.path : e.path(args)}`,
-        headers: { ...s.headers, ...e.headers },
-        params: typeof e.params === 'function' ? e.params(args) : e.params,
-        paramsSerializer: {
-          serialize: (params) => stringify(removeUndefinedProps(params), { arrayFormat: 'repeat' }),
-        },
-        reqId: reqId++,
-        logger: logger.extend(`${reqId}#${getRandomChars()}`),
-      };
+export type Endpoint<ARGS extends t.Any, BODY extends t.Any> = {
+  $args: ARGS;
+  $returnBody: BODY;
+  method: AxiosMethod;
+  path: string | ((args: t.TypeOf<ARGS>) => PromiseMaybe<string>);
+  headers?:
+    | Record<string, string>
+    | ((args: t.TypeOf<ARGS>) => PromiseMaybe<Record<string, string>>);
+  params?: Params | ((args: t.TypeOf<ARGS>) => PromiseMaybe<Params>);
+};
 
-      axiosOptions.logger('[req]', e.method, axios.getUri(axiosOptions));
+export const createEndpoint = <ARGS extends t.Any = t.VoidC, BODY extends t.Any = t.UnknownC>(
+  options: Omit<Endpoint<ARGS, BODY>, '$args' | '$returnBody'>,
+  types?: { args?: ARGS; returnBody?: BODY }
+): Endpoint<ARGS, BODY> => ({
+  ...options,
+  $args: (types?.args ?? t.void) as any,
+  $returnBody: (types?.returnBody ?? t.unknown) as any,
+});
 
-      const promise = axios.request(axiosOptions).then(decode(AxiosResponse(e.body ?? t.unknown)));
-      return axiosOptions.logger.enabled
-        ? (promise
-            .then(
-              tap((response) => {
-                axiosOptions.logger(
-                  '[res]',
-                  '[status]:',
-                  `${response.status} ${response.statusText}`
-                );
-                axiosOptions.logger('[res]', '[headers]:', response.headers);
-              })
-            )
-            .catch((e) => {
-              if (e instanceof AxiosError) axiosOptions.logger('[res]', 'AxiosError: ' + e.message);
-              else if (e instanceof IotsParseError)
-                axiosOptions.logger('[res]', 'IotsParseError: ' + e.message);
-              throw e;
-            }) as any)
-        : promise;
+export const pat =
+  <ARGS extends t.Any, BODY extends t.Any>(service: Service, endpoint: Endpoint<ARGS, BODY>) =>
+  async (args: t.TypeOf<ARGS>): Promise<AxiosResponse<t.TypeOf<BODY>>> => {
+    const reqId = reqIdRef.current++;
+    const transactionLogger = logger.extend(`${reqId}.${getRandomChars()}`);
+
+    // These could be parallellized with Promise.all if needed
+    const params =
+      typeof endpoint.params === 'object' ? endpoint.params : await endpoint.params?.(args);
+    const url =
+      service.baseUrl +
+      (typeof endpoint.path === 'string' ? endpoint.path : await endpoint.path(args));
+    const headers = {
+      ...service.headers,
+      ...(typeof endpoint.headers === 'object' ? endpoint.headers : await endpoint.headers?.(args)),
     };
 
-  $ = <SNAME extends SNAMES, ENAME extends keyof E>(path: Record<SNAME, ENAME>) => {
-    const serviceName = Object.keys(path)[0] as SNAME;
-    const fn = this.fnFromServiceandEndpoint(this.s[serviceName], this.e[path[serviceName]]);
-    type FN = typeof fn;
-    return fn as E[ENAME]['args'] extends t.Any ? FN : () => ReturnType<FN>;
-  };
-}
+    const axiosRequestOptions: AxiosRequestEnhanced = {
+      method: endpoint.method,
+      params,
+      url,
+      headers,
+      paramsSerializer: {
+        serialize: (params) => stringify(removeUndefinedProps(params), { arrayFormat: 'repeat' }),
+      },
+      reqId,
+      transactionLogger,
+    };
 
-export default Patman;
+    transactionLogger('[req]', endpoint.method, axios.getUri(axiosRequestOptions));
+
+    const requestPromise = axios
+      .request(axiosRequestOptions)
+      .then(tap((response) => (response.data = decode(endpoint.$returnBody)(response.data))));
+
+    return transactionLogger.enabled
+      ? (requestPromise
+          .then(
+            tap((response) => {
+              transactionLogger('[res]', '[status]:', `${response.status} ${response.statusText}`);
+              transactionLogger('[res]', '[headers]:', response.headers);
+            })
+          )
+          .catch((e) => {
+            if (e instanceof AxiosError || e instanceof IotsParseError)
+              transactionLogger('[res]', e);
+            throw e;
+          }) as any)
+      : requestPromise;
+  };
+
+export default pat;

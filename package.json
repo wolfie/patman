@@ -2,12 +2,13 @@
   "name": "patman",
   "license": "MIT",
   "displayName": "PatMan",
-  "version": "1.0.0",
+  "version": "1.0.0-beta.1",
+  "description": "A small programmatic library for consuming APIs.",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "sideEffects": false,
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp package.json dist",
+    "build": "tsc -p tsconfig.build.json && node ./postBuild",
     "dev": "cross-env DEBUG=patman* ts-node example"
   },
   "peerDependencies": {

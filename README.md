@@ -1,6 +1,12 @@
+# Patman
+
+A small programmatic library for consuming APIs.
+
+## Example
+
+```typescript
 import * as t from 'io-ts';
-import { createEndpoint, pat, Service } from '../src';
-import { handleAxios404Response, handleIotsParseError } from '../src/utils';
+import { createEndpoint, pat, Service } from 'patman';
 
 const MeatAndFillerArgs = t.intersection([
   t.type({
@@ -39,13 +45,11 @@ const staticEndpoint = createEndpoint({
 
 (async () => {
   const callMeatAndFiller = pat(baconService, meatAndFiller);
-  const result1 = callMeatAndFiller({ type: 'all-meat', paras: 1 })
-    .then((response) => response.data)
-    .catch(handleIotsParseError<string[]>([]));
+  const result1 = await callMeatAndFiller({ type: 'all-meat', paras: 1 }).then(
+    (response) => response.data
+  );
 
   const callStatic = pat(baconService, staticEndpoint);
-  const result2 = callStatic()
-    .then((response) => response.data)
-    .catch(handleIotsParseError<string[]>([]))
-    .catch(handleAxios404Response<string[]>([]));
+  const result2 = await callStatic().then((response) => response.data);
 })();
+```
