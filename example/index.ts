@@ -1,6 +1,7 @@
 import * as t from 'io-ts';
-import { createEndpoint, pat, Service } from '../src';
-import { handleAxios404Response, handleIotsParseError } from '../src/utils';
+import { combine, createCallFunction, createEndpoint, Service } from '../src';
+import handleAxios404Response from '../src/handleAxios404Response';
+import handleIotsParseError from '../src/handleIotsParseError';
 
 const MeatAndFillerArgs = t.intersection([
   t.type({
@@ -38,14 +39,23 @@ const staticEndpoint = createEndpoint({
 });
 
 (async () => {
-  const callMeatAndFiller = pat(baconService, meatAndFiller);
-  const result1 = callMeatAndFiller({ type: 'all-meat', paras: 1 })
+  const callMeatAndFiller = createCallFunction(baconService, meatAndFiller);
+  const result1 = await callMeatAndFiller({ type: 'all-meat', paras: 1 })
     .then((response) => response.data)
     .catch(handleIotsParseError<string[]>([]));
 
-  const callStatic = pat(baconService, staticEndpoint);
-  const result2 = callStatic()
+  const callStatic = createCallFunction(baconService, staticEndpoint);
+  const result2 = await callStatic()
     .then((response) => response.data)
     .catch(handleIotsParseError<string[]>([]))
     .catch(handleAxios404Response<string[]>([]));
+
+  console.log({ result1, result2 });
+})();
+
+(async () => {
+  const baconIpsum = combine({ prod: baconService }, { meatAndFiller, staticEndpoint });
+  baconIpsum.prod
+    .meatAndFiller({ type: 'all-meat' })
+    .then(({ data }) => console.log('baconIpsum.prod.meatAndFiller', data));
 })();
