@@ -7,6 +7,8 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "sideEffects": false,
+  "repository": "github:wolfie/patman",
+  "homepage": "https://github.com/wolfie/patman#readme",
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node ./postBuild",
     "build:watch": "tsc -p tsconfig.build.json --watch",
